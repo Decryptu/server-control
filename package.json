@@ -1,0 +1,14 @@
+{
+	"name": "minecraft-server-restart-bot",
+	"version": "1.0.0",
+	"description": "Discord bot to manage Minecraft server restarts",
+	"main": "index.js",
+	"scripts": {
+		"start": "node index.js"
+	},
+	"dependencies": {
+		"axios": "^1.6.2",
+		"discord.js": "^14.13.0",
+		"dotenv": "^16.3.1"
+	}
+}
