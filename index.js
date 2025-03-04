@@ -5,6 +5,7 @@ const {
 	REST,
 	Routes,
 	EmbedBuilder,
+	ActivityType,
 } = require("discord.js");
 const axios = require("axios");
 
@@ -14,6 +15,8 @@ const SERVER_ID = "0b2bfe5d";
 const API_KEY = process.env.PTERODACTYL_API_KEY;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const VOTE_TIMEOUT = 60; // seconds
+const MAX_RAM_GB = 12; // Maximum RAM in GB
+const STATUS_UPDATE_INTERVAL = 60000; // Update status every minute (60000ms)
 
 // Client setup
 const client = new Client({
@@ -44,7 +47,7 @@ async function sendServerCommand(command) {
 	}
 }
 
-async function getServerStatus() {
+async function getServerResources() {
 	try {
 		const response = await axios({
 			method: "GET",
@@ -54,10 +57,10 @@ async function getServerStatus() {
 				Accept: "Application/vnd.pterodactyl.v1+json",
 			},
 		});
-		return response.data.attributes.current_state;
+		return response.data.attributes;
 	} catch (error) {
-		console.error("Error getting server status:", error.message);
-		return "unknown";
+		console.error("Error getting server resources:", error.message);
+		return null;
 	}
 }
 
@@ -80,6 +83,53 @@ async function setPowerState(state) {
 	}
 }
 
+// Update bot status with RAM usage
+async function updateBotStatus() {
+	try {
+		const resources = await getServerResources();
+
+		if (!resources) {
+			client.user.setActivity("Server Offline", {
+				type: ActivityType.Watching,
+			});
+			return;
+		}
+
+		const { current_state, resources: serverResources } = resources;
+
+		if (current_state !== "running") {
+			client.user.setActivity(`Server ${current_state}`, {
+				type: ActivityType.Watching,
+			});
+			return;
+		}
+
+		// Calculate RAM usage in GB (with 2 decimal places)
+		const ramUsageGB = (
+			serverResources.memory_bytes /
+			1024 /
+			1024 /
+			1024
+		).toFixed(2);
+		const ramPercentage = ((ramUsageGB / MAX_RAM_GB) * 100).toFixed(0);
+
+		// Set bot status showing RAM usage
+		client.user.setActivity(
+			`RAM: ${ramUsageGB}GB/${MAX_RAM_GB}GB (${ramPercentage}%)`,
+			{
+				type: ActivityType.Watching,
+			},
+		);
+
+		console.log(
+			`Updated status: RAM usage ${ramUsageGB}GB/${MAX_RAM_GB}GB (${ramPercentage}%)`,
+		);
+	} catch (error) {
+		console.error("Error updating bot status:", error);
+		client.user.setActivity("Status Error", { type: ActivityType.Watching });
+	}
+}
+
 // Restart server process
 async function performRestart(interaction) {
 	try {
@@ -99,11 +149,15 @@ async function performRestart(interaction) {
 
 		// Wait for server to stop
 		await interaction.editReply("Waiting for server to stop...");
-		let status;
+		let resources;
 		do {
-			status = await getServerStatus();
+			resources = await getServerResources();
 			await new Promise((resolve) => setTimeout(resolve, 2000));
-		} while (status !== "offline" && status !== "stopping");
+		} while (
+			resources &&
+			resources.current_state !== "offline" &&
+			resources.current_state !== "stopping"
+		);
 
 		// Start the server
 		await interaction.editReply("Starting the server back up...");
@@ -132,6 +186,10 @@ async function registerCommands() {
 			name: "force-restart",
 			description: "Force restart the Minecraft server (Admin only)",
 		},
+		{
+			name: "status",
+			description: "Show current server status and resource usage",
+		},
 	];
 
 	try {
@@ -152,6 +210,12 @@ async function registerCommands() {
 client.once("ready", () => {
 	console.log(`Logged in as ${client.user.tag}`);
 	registerCommands();
+
+	// Initial status update
+	updateBotStatus();
+
+	// Set up regular status updates
+	setInterval(updateBotStatus, STATUS_UPDATE_INTERVAL);
 });
 
 client.on("interactionCreate", async (interaction) => {
@@ -228,6 +292,97 @@ client.on("interactionCreate", async (interaction) => {
 		await setPowerState("start");
 
 		await interaction.editReply("Server has been force restarted!");
+	} else if (commandName === "status") {
+		await interaction.deferReply();
+
+		try {
+			const resources = await getServerResources();
+
+			if (!resources) {
+				return interaction.editReply(
+					"Failed to get server status. The server might be offline.",
+				);
+			}
+
+			const {
+				current_state,
+				resources: serverResources,
+				is_suspended,
+			} = resources;
+
+			// Calculate RAM and CPU values
+			const ramUsageGB = (
+				serverResources.memory_bytes /
+				1024 /
+				1024 /
+				1024
+			).toFixed(2);
+			const ramPercentage = ((ramUsageGB / MAX_RAM_GB) * 100).toFixed(0);
+			const diskUsageGB = (
+				serverResources.disk_bytes /
+				1024 /
+				1024 /
+				1024
+			).toFixed(2);
+
+			// Format network usage
+			const networkRx = (
+				serverResources.network_rx_bytes /
+				1024 /
+				1024
+			).toFixed(2);
+			const networkTx = (
+				serverResources.network_tx_bytes /
+				1024 /
+				1024
+			).toFixed(2);
+
+			// Create a status embed
+			const statusEmbed = new EmbedBuilder()
+				.setTitle("Minecraft Server Status")
+				.setDescription(
+					`Current State: **${current_state}**${is_suspended ? " (SUSPENDED)" : ""}`,
+				)
+				.addFields(
+					{
+						name: "RAM Usage",
+						value: `${ramUsageGB} GB / ${MAX_RAM_GB} GB (${ramPercentage}%)`,
+						inline: true,
+					},
+					{
+						name: "CPU Usage",
+						value: `${serverResources.cpu_absolute.toFixed(1)}%`,
+						inline: true,
+					},
+					{ name: "Disk Usage", value: `${diskUsageGB} GB`, inline: true },
+					{
+						name: "Network",
+						value: `↓ ${networkRx} MB / ↑ ${networkTx} MB`,
+						inline: true,
+					},
+				)
+				.setColor(current_state === "running" ? "#00ff00" : "#ff9900")
+				.setTimestamp();
+
+			// Add player count if server is running
+			if (
+				current_state === "running" &&
+				serverResources.online_players !== undefined
+			) {
+				statusEmbed.addFields({
+					name: "Players",
+					value: `${serverResources.online_players} / ${serverResources.max_players || "Unknown"}`,
+					inline: true,
+				});
+			}
+
+			await interaction.editReply({ embeds: [statusEmbed] });
+		} catch (error) {
+			console.error("Error getting status:", error);
+			await interaction.editReply(
+				"Failed to get server status due to an error.",
+			);
+		}
 	}
 });
 
