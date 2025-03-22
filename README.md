@@ -1,4 +1,4 @@
-# Pterodactyl Server Discord Bot
+# Pterodactyl Panel Discord Bot
 
 A Discord bot for managing your Minecraft server hosted on Bloom Host or any Pterodactyl panel. This bot allows server administrators and users to check server status, resources usage, and perform server restarts through Discord commands.
 
